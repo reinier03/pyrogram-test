@@ -7,9 +7,9 @@ import pyrogram
 from pyrogram import Client, filters
 import os
 import subprocess
-
-
 from zipfile import ZipFile
+from flask import Flask, request
+import threading
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 if not "media" in os.listdir():
@@ -24,6 +24,7 @@ api_hash = os.environ["api_hash"]
 bot_token = os.environ["token"]
 EMAIL_PASS = os.environ["EMAIL_PASS"]
 EMAIL_USER = os.environ["EMAIL_USER"]
+EMAIL_TARGET = os.environ["EMAIL_TARGET"]
 
 # Crear una instancia del cliente
 bot = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
@@ -34,6 +35,16 @@ MB = 1024 * 1024
 
 
 
+def download_progress(current, total, bot, message):
+    try:
+        edit = bot.send_message(message.chat.id, f"Se han descargado {current} de {total}")
+        while not current == total:
+            bot.edit_message_text(message.chat.id, edit.message_id, f"Se han descargado {current} de {total}")
+    except:
+        bot.send_message("No se pudo descargar adecuadamente :(")
+    
+    return
+    
 def enviar_correo_con_adjunto(destinatario, asunto, cuerpo, ruta_adjunto, remitente_email, remitente_password):
     
     """
@@ -110,7 +121,7 @@ def dividir(user_id , archivo_zip, nombre_archivo, chunks=chunks, carpeta_destin
             with open(dic_temp[user_id], "wb") as file_part:
                 file_part.write(archivo.read(chunks * MB))
             
-            enviar_correo_con_adjunto("reinier.mayea@nauta.cu", "Archivo Solicitado", f"Parte {i + 1} de {int(len(archivo_zip) / MB) + 1}", dic_temp[user_id], EMAIL_USER, EMAIL_PASS)
+            enviar_correo_con_adjunto(EMAIL_TARGET, "Archivo Solicitado", f"Parte {i + 1} de {int(len(archivo_zip) / MB) + 1}", dic_temp[user_id], EMAIL_USER, EMAIL_PASS)
             
             os.remove(dic_temp[user_id])
             
@@ -121,6 +132,8 @@ def dividir(user_id , archivo_zip, nombre_archivo, chunks=chunks, carpeta_destin
 
 @bot.on_message((filters.video | filters.audio | filters.document | filters.all) & ~ filters.text)
 async def recibir(cliente, message):
+    
+    await bot.send_message(message.chat.id, "Ahora procederé a descargar el archivo enviado:)")
     dic_temp[message.chat.id] = ""
        
     if message.document:
@@ -137,11 +150,28 @@ async def recibir(cliente, message):
         
     path = os.path.join(os.path.abspath("."), "media" , nombre)
     
-    await message.download(path)
-    await bot.send_message(message.chat.id, "El archivo ya se descargó :)")
+    try:
+        
+        # await bot.download_media(message, path, True, True , download_progress, (bot, message))
+        await bot.download_media(message, path)
+        
+    except:
+        
+        await bot.send_message(message.chat.id, "Ha ocurrido un error")
+    # await message.download(path)
+    
     
     #si el archivo es más grande que el maximo de partes:
-    if os.path.getsize(path) > chunks * MB:
+    try:
+       os.path.getsize(path) 
+    except:
+        await bot.send_message(message.chat.id, "Ha ocurrido un error, el archivo no se descargó :(")
+        return
+    
+    
+    await bot.send_message(message.chat.id, "El archivo ya se descargó :)")
+    
+    if os.path.getsize(path) > (chunks * MB):
         
         await bot.send_message(message.chat.id, "El archivo ya se descargó :) Ahora lo voy a enviar por partes de 15 mb")
         
@@ -152,7 +182,7 @@ async def recibir(cliente, message):
         dividir(message.chat.id, os.path.join(".", "media", f"{os.path.basename(path)}.zip"), nombre)    
     
     else:
-        enviar_correo_con_adjunto("reinier.mayea@nauta.cu", "Archivo Solicitado", nombre , path, "reimahopper@gmail.com", "exyw bmjs fuuo bkxy")
+        enviar_correo_con_adjunto(EMAIL_TARGET, "Archivo Solicitado", nombre , path, EMAIL_USER, EMAIL_PASS)
         
         await bot.send_message(message.chat.id, "El archivo ya se descargó y fué enviado al correo :)")
     
@@ -202,4 +232,21 @@ def c(bot, message):
 async def cmd_texto(cliente, message):
     await bot.send_message(message.chat.id, "Tienes que escribir algo Mastodonte")
         
+
+
+app = Flask(__name__)        
+
+@app.route("/")
+def cmd_flask():
+    return "Hello World"
+        
+        
+def flask_run():
+    try:
+        app.run("0.0.0.0", port=os.environ["PORT"])
+    except:
+        app.run("0.0.0.0", port=5000)
+
+threading.Thread(name="hilo_flask", target=flask_run).start()
+
 bot.run()
