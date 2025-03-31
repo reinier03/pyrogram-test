@@ -2,9 +2,9 @@ from pyrogram import Client, filters
 import os
 
 # Configuración del bot
-api_id = 'TU_API_ID'  # Reemplaza con tu API ID
-api_hash = 'TU_API_HASH'  # Reemplaza con tu API Hash
-bot_token = 'TU_BOT_TOKEN'  # Reemplaza con el token de tu bot
+api_id = os.environ["api_id"]  # Reemplaza con tu API ID
+api_hash = os.environ["api_hash"]  # Reemplaza con tu API Hash
+bot_token = os.environ["token"]  # Reemplaza con el token de tu bot
 
 # Crear una instancia del cliente
 app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
