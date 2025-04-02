@@ -10,6 +10,7 @@ import subprocess
 from zipfile import ZipFile
 from flask import Flask, request
 import threading
+import re
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 if not "media" in os.listdir():
@@ -27,21 +28,28 @@ EMAIL_USER = os.environ["EMAIL_USER"]
 EMAIL_TARGET = os.environ["EMAIL_TARGET"]
 
 # Crear una instancia del cliente
-bot = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
+bot = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token, parse_mode=pyrogram.enums.ParseMode.HTML)
 
-admin = os.environ["admin"]
+
+admin = int(os.environ["admin"])
 MB = 1024 * 1024
 
 
 
 
-def download_progress(current, total, bot, message):
+def download_progress(current, total, bot, message, nombre, edit):
+    # print("Descargado: " + str(round(100 / (total / current))) + "%")
+    no_guardado="⬜"
+    guardado = "⬛"
     try:
-        edit = bot.send_message(message.chat.id, f"Se han descargado {current} de {total}")
-        while not current == total:
-            bot.edit_message_text(message.chat.id, edit.message_id, f"Se han descargado {current} de {total}")
-    except:
-        bot.send_message("No se pudo descargar adecuadamente :(")
+        bot.edit_message_text(message.chat.id, edit.id, f"Descargando <b>{nombre}</b>\n\nProgreso de Descarga:\n|{guardado * (round(100 / (total / current)) // 10)}{no_guardado * (10 - (round(100 / (total / current)) // 10))}| {str(round(100 / (total / current)))}%")
+        
+    except Exception as e:
+        bot.delete_messages(message.chat.id, edit.id)
+        if "MESSAGE_NOT_MODIFIED" in str(e.args):
+            pass
+        else:
+            bot.send_message(message.chat.id, "No se pudo descargar adecuadamente :(")
     
     return
     
@@ -102,7 +110,6 @@ def enviar_correo_con_adjunto(destinatario, asunto, cuerpo, ruta_adjunto, remite
         os.remove(ruta_adjunto)
         return ("Error", e.args)
         
-    os.remove(ruta_adjunto)
     return "OK"
 
 
@@ -114,21 +121,31 @@ def dividir(user_id , archivo_zip, nombre_archivo, chunks=chunks, carpeta_destin
     
     with open(archivo_zip, "rb") as archivo:
         archivo.seek(0)
-                
         for i in range(int(os.path.getsize(archivo_zip) / (MB * chunks)) + 1):
             dic_temp[user_id] = os.path.join(carpeta_destino, "part_" + nombre_archivo + f".{i+1:03}")
                                    
             with open(dic_temp[user_id], "wb") as file_part:
                 file_part.write(archivo.read(chunks * MB))
             
-            enviar_correo_con_adjunto(EMAIL_TARGET, "Archivo Solicitado", f"Parte {i + 1} de {int(len(archivo_zip) / MB) + 1}", dic_temp[user_id], EMAIL_USER, EMAIL_PASS)
+            res = enviar_correo_con_adjunto(EMAIL_TARGET, "Archivo Solicitado", f"Parte {i + 1} de {int(os.path.getsize(archivo_zip) / (MB * chunks)) + 1}", dic_temp[user_id], EMAIL_USER, EMAIL_PASS)
+            
+            if isinstance(res, tuple):
+                return
             
             os.remove(dic_temp[user_id])
             
     os.remove(archivo_zip)
 
 
-
+@bot.on_message(filters.regex("/enviar"))
+def cmd_enviar(cliente, message):
+    if len(message.text.split("_")) > 1:
+        dividir(
+            message.chat.id,
+            #direccion del archivo zip
+            os.path.abspath(os.path.join(".", "media", os.listdir(os.path.join(".", "media"))[int(message.text.split("_")[-1])])),
+            #nombre de archivo 
+            os.path.basename(os.path.join(".", "media", os.listdir(os.path.join(".", "media"))[int(message.text.split("_")[-1])])).replace(re.search(r"[.].*", os.path.basename(os.path.join(".", "media", os.listdir(os.path.join(".", "media"))[int(message.text.split("_")[-1])]))).group(), ""))
 
 @bot.on_message((filters.video | filters.audio | filters.document | filters.all) & ~ filters.text)
 async def recibir(cliente, message):
@@ -150,15 +167,13 @@ async def recibir(cliente, message):
         
     path = os.path.join(os.path.abspath("."), "media" , nombre)
     
+    msg = await bot.send_message(message.chat.id, "Inciando Descarga...")
+    
     try:
-        
-        # await bot.download_media(message, path, True, True , download_progress, (bot, message))
-        await bot.download_media(message, path)
-        
-    except:
-        
-        await bot.send_message(message.chat.id, "Ha ocurrido un error")
-    # await message.download(path)
+        await bot.download_media(message, path, progress=download_progress, progress_args=(bot, message, nombre, msg))
+    except Exception as err:
+        bot.send_message(message.chat.id, f"Ha ocurrido un error intentando descargar el archivo:\n\n{err.args}")
+        return
     
     
     #si el archivo es más grande que el maximo de partes:
@@ -169,17 +184,27 @@ async def recibir(cliente, message):
         return
     
     
-    await bot.send_message(message.chat.id, "El archivo ya se descargó :)")
+    
+    await bot.send_message(message.chat.id, f"El archivo {nombre} ya se descargó :)")
+    
     
     if os.path.getsize(path) > (chunks * MB):
         
-        await bot.send_message(message.chat.id, "El archivo ya se descargó :) Ahora lo voy a enviar por partes de 15 mb")
         
         with ZipFile(os.path.join(".", "media", f"{os.path.basename(path)}.zip"), "w") as file:
             file.write(path, os.path.basename(path))
             
+            for e, direct in enumerate(os.listdir(os.path.dirname(path))):
+                if direct == file.filename:
+                    await bot.send_message(message.chat.id, f"El archivo ya se descargó :)\n\nAL parecer el archivo es mayor a {chunks} MB, utiliza el comando /enviar_{e} para enviarlo al correo ({EMAIL_TARGET}) dividido")    
+            else:
+                await bot.send_message(message.chat.id, f"El archivo ya se descargó :)\n\nAL parecer el archivo es mayor a {chunks} MB, utiliza el comando /enviar_<índice> para enviarlo al correo dividido")    
+                    
         
-        dividir(message.chat.id, os.path.join(".", "media", f"{os.path.basename(path)}.zip"), nombre)    
+        
+        # dividir(message.chat.id, os.path.join(".", "media", f"{os.path.basename(path)}.zip"), nombre)    
+        
+        os.remove(path)
     
     else:
         enviar_correo_con_adjunto(EMAIL_TARGET, "Archivo Solicitado", nombre , path, EMAIL_USER, EMAIL_PASS)
@@ -234,19 +259,19 @@ async def cmd_texto(cliente, message):
         
 
 
-app = Flask(__name__)        
+# app = Flask(__name__)        
 
-@app.route("/")
-def cmd_flask():
-    return "Hello World"
+# @app.route("/")
+# def cmd_flask():
+#     return "Hello World"
         
         
-def flask_run():
-    try:
-        app.run("0.0.0.0", port=os.environ["PORT"])
-    except:
-        app.run("0.0.0.0", port=5000)
+# def flask_run():
+#     try:
+#         app.run("0.0.0.0", port=os.environ["PORT"])
+#     except:
+#         app.run("0.0.0.0", port=5000)
 
-threading.Thread(name="hilo_flask", target=flask_run).start()
+# threading.Thread(name="hilo_flask", target=flask_run).start()
 
 bot.run()
